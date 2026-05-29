@@ -1,8 +1,8 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import {
   X, Plus, ChevronDown, Calendar, Search, Play,
   Filter, CheckSquare, Square, Tag, Trash2, Database,
-  Download, Layout, Gem, BrainCircuit, Send, Sparkles, Mic, CircleStop
+  Download, Layout, Gem, BrainCircuit, Send, Sparkles, Mic, CircleStop, History, Clock, MessageSquarePlus
 } from 'lucide-react';
 import { DIMENSIONS, METRICS, SCENARIOS, DIM_DICT } from './data.js';
 import { renderMarkdown, tryParseAction } from './chatUtils.js';
@@ -56,6 +56,65 @@ const AppMobile = () => {
   const aiInputRef = useRef(null);
   const aiInitializedRef = useRef(false);
   const contentRefs = useRef({});
+
+  // ── Conversation history ──
+  const SESSIONS_KEY = 'linglong_chat_sessions';
+  const [sessions, setSessions] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(SESSIONS_KEY)) || []; }
+    catch { return []; }
+  });
+  const [showHistory, setShowHistory] = useState(false);
+  const currentSessionIdRef = useRef(null);
+
+  const persistSessions = useCallback((next) => {
+    const updated = typeof next === 'function' ? next(sessions) : next;
+    setSessions(updated);
+    try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(updated)); } catch {}
+  }, [sessions]);
+
+  const saveCurrentSession = useCallback(() => {
+    const realMessages = messages.filter(m => m.role === 'user' || (m.role === 'agent' && m.content));
+    if (realMessages.length <= 1) return;
+    const firstUser = realMessages.find(m => m.role === 'user');
+    const title = firstUser ? (firstUser.content || '').slice(0, 40) + ((firstUser.content || '').length > 40 ? '...' : '') : '新对话';
+    const session = {
+      id: currentSessionIdRef.current || Date.now(),
+      title,
+      createdAt: new Date().toISOString(),
+      messages: realMessages,
+    };
+    currentSessionIdRef.current = session.id;
+    persistSessions(prev => {
+      const rest = prev.filter(s => s.id !== session.id);
+      return [session, ...rest].slice(0, 50);
+    });
+  }, [messages, persistSessions]);
+
+  const loadSession = useCallback((session) => {
+    setMessages(session.messages);
+    currentSessionIdRef.current = session.id;
+    setShowHistory(false);
+    aiInitializedRef.current = true;
+  }, []);
+
+  const deleteSession = useCallback((id) => {
+    persistSessions(prev => prev.filter(s => s.id !== id));
+    if (currentSessionIdRef.current === id) {
+      currentSessionIdRef.current = null;
+    }
+  }, [persistSessions]);
+
+  const startNewChat = useCallback(() => {
+    if (messages.length > 1) saveCurrentSession();
+    setMessages([WELCOME_MESSAGE]);
+    currentSessionIdRef.current = null;
+    setShowHistory(false);
+  }, [messages, saveCurrentSession]);
+
+  const handleCloseChat = useCallback(() => {
+    if (messages.length > 1) saveCurrentSession();
+    setShowAIChat(false);
+  }, [messages, saveCurrentSession, setShowAIChat]);
 
   const openSaveReportModal = () => {
     setSaveReportName('');
@@ -1035,15 +1094,75 @@ const AppMobile = () => {
                 <p className="text-[10px] text-slate-400 font-medium">玲珑报表智能分析</p>
               </div>
             </div>
-            <button
-              onClick={() => setShowAIChat(false)}
-              className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
-            >
-              <X className="w-4 h-4" />
-            </button>
+            <div className="flex items-center gap-1">
+              <button
+                onClick={startNewChat}
+                className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
+                title="新对话"
+              >
+                <MessageSquarePlus className="w-4 h-4" />
+              </button>
+              <button
+                onClick={() => setShowHistory(!showHistory)}
+                className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                  showHistory ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
+                }`}
+                title="历史对话"
+              >
+                <History className="w-4 h-4" />
+              </button>
+              <button
+                onClick={handleCloseChat}
+                className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
           </div>
 
+          {/* History panel */}
+          {showHistory && (
+            <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+              <div className="shrink-0 px-4 py-2.5 border-b border-slate-200 bg-white flex items-center justify-between">
+                <span className="text-xs font-black text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                  <Clock className="w-3.5 h-3.5" /> 历史对话
+                </span>
+                <span className="text-[10px] text-slate-400">{sessions.length} 条记录</span>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3 space-y-2">
+                {sessions.length === 0 ? (
+                  <div className="text-center text-xs text-slate-400 py-8">暂无历史对话</div>
+                ) : (
+                  sessions.map((s) => (
+                    <div
+                      key={s.id}
+                      className="group bg-white rounded-xl border border-slate-200 px-3.5 py-2.5 hover:border-indigo-300 hover:shadow-sm transition-all cursor-pointer flex items-start gap-2.5"
+                      onClick={() => loadSession(s)}
+                    >
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-bold text-slate-700 truncate">{s.title}</div>
+                        <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1.5">
+                          <span>{new Date(s.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                          <span>·</span>
+                          <span>{s.messages.length} 条消息</span>
+                        </div>
+                      </div>
+                      <button
+                        onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                        className="shrink-0 w-6 h-6 rounded-lg hover:bg-red-50 flex items-center justify-center text-slate-300 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                        title="删除"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Messages */}
+          {!showHistory && (<>
           <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 bg-slate-50">
             {messages.map((msg, idx) => {
               if (msg.role === 'user') {
@@ -1192,6 +1311,7 @@ const AppMobile = () => {
               {micSupported && ' · 语音输入'}
             </p>
           </div>
+        </>)}
         </div>
       )}
 

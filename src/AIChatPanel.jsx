@@ -1,5 +1,5 @@
-import React, { useState, useRef, useEffect } from 'react';
-import { X, Send, BrainCircuit, Sparkles, ChevronRight, Mic, CircleStop } from 'lucide-react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { X, Send, BrainCircuit, Sparkles, ChevronRight, Mic, CircleStop, PanelRight, PanelBottom, History, Trash2, MessageSquarePlus, Clock } from 'lucide-react';
 import { DIMENSIONS, METRICS } from './data.js';
 import { renderMarkdown, tryParseAction } from './chatUtils.js';
 import ShareMenu from './ShareMenu.jsx';
@@ -19,6 +19,8 @@ const WELCOME_MESSAGE = {
 const AIChatPanel = ({
   visible,
   onClose,
+  layout = 'right',
+  onToggleLayout,
   scenario,
   selectedDims,
   selectedMets,
@@ -37,7 +39,8 @@ const AIChatPanel = ({
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
-  const [panelWidth, setPanelWidth] = useState(420);
+  const [panelWidth, setPanelWidth] = useState(320);
+  const [panelHeight, setPanelHeight] = useState(360);
   const [isListening, setIsListening] = useState(false);
   const [micSupported, setMicSupported] = useState(false);
   const messagesEndRef = useRef(null);
@@ -48,13 +51,80 @@ const AIChatPanel = ({
   const draggingRef = useRef(false);
   const startXRef = useRef(0);
   const startWidthRef = useRef(0);
+  const startYRef = useRef(0);
+  const startHeightRef = useRef(0);
   const contentRefs = useRef({});
+
+  // ── Conversation history ──
+  const SESSIONS_KEY = 'linglong_chat_sessions';
+  const [sessions, setSessions] = useState(() => {
+    try { return JSON.parse(localStorage.getItem(SESSIONS_KEY)) || []; }
+    catch { return []; }
+  });
+  const [showHistory, setShowHistory] = useState(false);
+  const currentSessionIdRef = useRef(null);
+
+  const persistSessions = useCallback((next) => {
+    const updated = typeof next === 'function' ? next(sessions) : next;
+    setSessions(updated);
+    try { localStorage.setItem(SESSIONS_KEY, JSON.stringify(updated)); } catch {}
+  }, [sessions]);
+
+  const saveCurrentSession = useCallback(() => {
+    const realMessages = messages.filter(m => m.role === 'user' || (m.role === 'agent' && m.content));
+    if (realMessages.length <= 1) return; // don't save welcome-only
+    const firstUser = realMessages.find(m => m.role === 'user');
+    const title = firstUser ? (firstUser.content || '').slice(0, 40) + ((firstUser.content || '').length > 40 ? '...' : '') : '新对话';
+    const session = {
+      id: currentSessionIdRef.current || Date.now(),
+      title,
+      createdAt: new Date().toISOString(),
+      messages: realMessages,
+    };
+    currentSessionIdRef.current = session.id;
+    persistSessions(prev => {
+      const rest = prev.filter(s => s.id !== session.id);
+      return [session, ...rest].slice(0, 50); // keep max 50
+    });
+  }, [messages, persistSessions]);
+
+  const loadSession = useCallback((session) => {
+    setMessages(session.messages);
+    currentSessionIdRef.current = session.id;
+    setShowHistory(false);
+    initializedRef.current = true;
+  }, []);
+
+  const deleteSession = useCallback((id) => {
+    persistSessions(prev => prev.filter(s => s.id !== id));
+    if (currentSessionIdRef.current === id) {
+      currentSessionIdRef.current = null;
+    }
+  }, [persistSessions]);
+
+  const startNewChat = useCallback(() => {
+    if (messages.length > 1) saveCurrentSession();
+    setMessages([WELCOME_MESSAGE]);
+    currentSessionIdRef.current = null;
+    setShowHistory(false);
+  }, [messages, saveCurrentSession]);
+
+  // Auto-save on close
+  const handleClose = useCallback(() => {
+    if (messages.length > 1) saveCurrentSession();
+    onClose();
+  }, [messages, saveCurrentSession, onClose]);
 
   useEffect(() => {
     const onMouseMove = (e) => {
       if (!draggingRef.current) return;
-      const delta = startXRef.current - e.clientX;
-      setPanelWidth(Math.min(800, Math.max(320, startWidthRef.current + delta)));
+      if (layout === 'bottom') {
+        const delta = startYRef.current - e.clientY;
+        setPanelHeight(Math.min(600, Math.max(200, startHeightRef.current + delta)));
+      } else {
+        const delta = startXRef.current - e.clientX;
+        setPanelWidth(Math.min(800, Math.max(320, startWidthRef.current + delta)));
+      }
     };
     const onMouseUp = () => {
       draggingRef.current = false;
@@ -67,7 +137,7 @@ const AIChatPanel = ({
       document.removeEventListener('mousemove', onMouseMove);
       document.removeEventListener('mouseup', onMouseUp);
     };
-  }, []);
+  }, [layout]);
 
   useEffect(() => {
     if (visible && !initializedRef.current) {
@@ -296,25 +366,34 @@ const AIChatPanel = ({
   };
 
   return (
-    <>
-      {/* Backdrop */}
-      {visible && (
+    <div
+      style={layout === 'bottom'
+        ? { height: visible ? panelHeight : 0 }
+        : { width: visible ? panelWidth : 0 }
+      }
+      className={`shrink-0 overflow-hidden transition-[width,height] duration-300 ease-in-out bg-white flex min-w-0 min-h-0 ${
+        layout === 'bottom'
+          ? 'flex-col border-t border-slate-200 rounded-t-2xl'
+          : 'flex-row border-l border-slate-200'
+      } ${visible ? 'shadow-2xl shadow-slate-300/50' : ''}`}
+    >
+      {/* Drag handle — part of flex flow, not absolute */}
+      {layout === 'bottom' ? (
         <div
-          className="fixed inset-0 bg-black/20 z-40 transition-opacity"
-          onClick={onClose}
-        />
-      )}
-
-      {/* Panel */}
-      <div
-        style={{ width: panelWidth }}
-        className={`fixed inset-y-0 right-0 bg-white shadow-2xl shadow-slate-300/50 z-50 flex flex-col transform transition-transform duration-300 ease-in-out ${
-          visible ? 'translate-x-0' : 'translate-x-full'
-        }`}
-      >
-        {/* Drag handle — left edge */}
+          className="shrink-0 h-1.5 cursor-row-resize group flex items-center justify-center hover:bg-indigo-200 transition-colors bg-slate-100"
+          onMouseDown={(e) => {
+            draggingRef.current = true;
+            startYRef.current = e.clientY;
+            startHeightRef.current = panelHeight;
+            document.body.style.cursor = 'row-resize';
+            document.body.style.userSelect = 'none';
+          }}
+        >
+          <div className="h-0.5 w-8 rounded-full bg-slate-300 group-hover:bg-indigo-400 transition-colors" />
+        </div>
+      ) : (
         <div
-          className="absolute -left-1 top-0 bottom-0 w-2 cursor-col-resize z-10 group flex items-center justify-center"
+          className="shrink-0 w-1.5 cursor-col-resize group flex items-center justify-center hover:bg-indigo-200 transition-colors bg-slate-100"
           onMouseDown={(e) => {
             draggingRef.current = true;
             startXRef.current = e.clientX;
@@ -323,8 +402,15 @@ const AIChatPanel = ({
             document.body.style.userSelect = 'none';
           }}
         >
-          <div className="w-1 h-10 rounded-full bg-slate-300 opacity-0 group-hover:opacity-100 transition-opacity" />
+          <div className="w-0.5 h-8 rounded-full bg-slate-300 group-hover:bg-indigo-400 transition-colors" />
         </div>
+      )}
+
+      {/* Inner wrapper — fixed size to prevent content reflow during animation */}
+      <div
+        style={layout === 'bottom' ? { height: panelHeight } : { width: panelWidth }}
+        className="flex flex-col flex-1 min-w-0 min-h-0"
+      >
         {/* Header */}
         <div className="shrink-0 flex items-center justify-between px-5 py-4 border-b border-slate-200 bg-gradient-to-r from-indigo-50 to-white">
           <div className="flex items-center gap-2.5">
@@ -336,15 +422,84 @@ const AIChatPanel = ({
               <p className="text-[10px] text-slate-400 font-medium">玲珑报表智能分析</p>
             </div>
           </div>
-          <button
-            onClick={onClose}
-            className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
-          >
-            <X className="w-4 h-4" />
-          </button>
+          <div className="flex items-center gap-1">
+            <button
+              onClick={startNewChat}
+              className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
+              title="新对话"
+            >
+              <MessageSquarePlus className="w-4 h-4" />
+            </button>
+            <button
+              onClick={() => setShowHistory(!showHistory)}
+              className={`w-7 h-7 rounded-lg flex items-center justify-center transition-colors ${
+                showHistory ? 'bg-indigo-100 text-indigo-600' : 'hover:bg-slate-100 text-slate-400 hover:text-slate-600'
+              }`}
+              title="历史对话"
+            >
+              <History className="w-4 h-4" />
+            </button>
+            {onToggleLayout && (
+              <button
+                onClick={onToggleLayout}
+                className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
+                title={layout === 'bottom' ? '切换至侧边栏' : '切换至底部面板'}
+              >
+                {layout === 'bottom' ? <PanelRight className="w-4 h-4" /> : <PanelBottom className="w-4 h-4" />}
+              </button>
+            )}
+            <button
+              onClick={handleClose}
+              className="w-7 h-7 rounded-lg hover:bg-slate-100 flex items-center justify-center text-slate-400 hover:text-slate-600 transition-colors"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
         </div>
 
+        {/* History panel */}
+        {showHistory && (
+          <div className="flex-1 flex flex-col overflow-hidden bg-slate-50">
+            <div className="shrink-0 px-4 py-2.5 border-b border-slate-200 bg-white flex items-center justify-between">
+              <span className="text-xs font-black text-slate-500 uppercase tracking-wider flex items-center gap-1.5">
+                <Clock className="w-3.5 h-3.5" /> 历史对话
+              </span>
+              <span className="text-[10px] text-slate-400">{sessions.length} 条记录</span>
+            </div>
+            <div className="flex-1 overflow-y-auto p-3 space-y-2">
+              {sessions.length === 0 ? (
+                <div className="text-center text-xs text-slate-400 py-8">暂无历史对话</div>
+              ) : (
+                sessions.map((s) => (
+                  <div
+                    key={s.id}
+                    className="group bg-white rounded-xl border border-slate-200 px-3.5 py-2.5 hover:border-indigo-300 hover:shadow-sm transition-all cursor-pointer flex items-start gap-2.5"
+                    onClick={() => loadSession(s)}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-bold text-slate-700 truncate">{s.title}</div>
+                      <div className="text-[10px] text-slate-400 mt-0.5 flex items-center gap-1.5">
+                        <span>{new Date(s.createdAt).toLocaleDateString('zh-CN', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</span>
+                        <span>·</span>
+                        <span>{s.messages.length} 条消息</span>
+                      </div>
+                    </div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); deleteSession(s.id); }}
+                      className="shrink-0 w-6 h-6 rounded-lg hover:bg-red-50 flex items-center justify-center text-slate-300 hover:text-red-400 transition-colors opacity-0 group-hover:opacity-100"
+                      title="删除"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                ))
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Messages */}
+        {!showHistory && (<>
         <div className="flex-1 overflow-y-auto px-4 py-4 space-y-4 bg-slate-50">
           {messages.map((msg, idx) => {
             if (msg.role === 'user') {
@@ -495,8 +650,9 @@ const AIChatPanel = ({
             {micSupported && ' · 🎤 语音输入'}
           </p>
         </div>
+        </>)}
       </div>
-    </>
+    </div>
   );
 };
 
