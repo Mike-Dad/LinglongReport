@@ -142,6 +142,9 @@ export const renderMarkdown = (text) => {
     }
     if (pLines.length > 0) {
       output.push(`<p class="text-xs text-slate-600 leading-relaxed my-1">${pLines.map(inlineFormat).join('<br/>')}</p>`);
+    } else {
+      // Unrecognized line (e.g. incomplete table row during streaming) — skip
+      i++;
     }
   }
 

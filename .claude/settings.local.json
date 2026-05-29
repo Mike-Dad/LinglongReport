@@ -38,7 +38,9 @@
       "Bash(npm install *)",
       "mcp__Claude_in_Chrome__list_connected_browsers",
       "WebFetch(domain:github.com)",
-      "WebFetch(domain:www.volcengine.com)"
+      "WebFetch(domain:www.volcengine.com)",
+      "Bash(venv/Scripts/python.exe -c \"import py_compile; py_compile.compile\\('linglong_ai.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(curl -s -X POST http://127.0.0.1:5001/bi-chat -H \"Content-Type: application/json\" -d @-)"
     ]
   }
 }

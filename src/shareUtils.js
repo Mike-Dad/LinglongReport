@@ -6,8 +6,10 @@ export async function renderToOffscreen(element) {
   // Temporarily lift overflow clipping so wide tables aren't truncated
   const prevOverflow = element.style.overflow;
   const prevOverflowX = element.style.overflowX;
+  const prevPaddingBottom = element.style.paddingBottom;
   element.style.overflow = 'visible';
   element.style.overflowX = 'visible';
+  element.style.paddingBottom = '24px';
 
   let canvas;
   try {
@@ -20,6 +22,7 @@ export async function renderToOffscreen(element) {
   } finally {
     element.style.overflow = prevOverflow;
     element.style.overflowX = prevOverflowX;
+    element.style.paddingBottom = prevPaddingBottom;
   }
   return canvas;
 }

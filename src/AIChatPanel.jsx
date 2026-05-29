@@ -212,6 +212,9 @@ const AIChatPanel = ({
     setInput('');
     setLoading(true);
 
+    const streamMsgId = Date.now();
+    setMessages(prev => [...prev, { role: 'agent', content: '', type: 'text', id: streamMsgId, streaming: true }]);
+
     const context = {
       scenario,
       dims: selectedDims.map(d => ({ id: d.id, name: d.name, category: d.category })),
@@ -231,33 +234,51 @@ const AIChatPanel = ({
 
       if (!res.ok) throw new Error(`Server error: ${res.status}`);
 
-      const data = await res.json();
-      const responseText = data.response || '';
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
 
-      const parsed = tryParseAction(responseText);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      if (parsed && parsed.action === 'update_query') {
-        applyQueryUpdate(parsed.params);
-        setMessages(prev => [...prev, {
-          role: 'agent',
-          content: parsed.params.explanation || '查询配置已更新',
-          type: 'action',
-          actionParams: parsed.params,
-        }]);
-      } else {
-        setMessages(prev => [...prev, {
-          role: 'agent',
-          content: responseText,
-          type: 'text',
-        }]);
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+          try {
+            const data = JSON.parse(line.slice(6));
+
+            // Try to parse action from every chunk — tool responses arrive as
+            // independent chunks via the message queue, not only on the last event.
+            const parsed = tryParseAction(data.text);
+            if (parsed?.action === 'update_query') {
+              applyQueryUpdate(parsed.params);
+              setMessages(prev => prev.map(msg =>
+                msg.id === streamMsgId
+                  ? { ...msg, content: parsed.params.explanation || '查询配置已更新', type: 'action', actionParams: parsed.params, streaming: !data.last }
+                  : msg
+              ));
+            } else {
+              setMessages(prev => prev.map(msg =>
+                msg.id === streamMsgId && msg.type !== 'action'
+                  ? { ...msg, content: data.text || '', streaming: !data.last }
+                  : msg
+              ));
+            }
+          } catch {
+            // skip malformed SSE line
+          }
+        }
       }
     } catch (err) {
-      setMessages(prev => [...prev, {
-        role: 'agent',
-        content: '抱歉，无法连接到 AI 服务。请确认后端已启动（`python linglong_ai.py`）。',
-        type: 'text',
-        isError: true,
-      }]);
+      setMessages(prev => prev.map(msg =>
+        msg.id === streamMsgId
+          ? { ...msg, content: '抱歉，无法连接到 AI 服务。请确认后端已启动（`python linglong_ai.py`）。', type: 'text', isError: true, streaming: false }
+          : msg
+      ));
     } finally {
       setLoading(false);
     }
@@ -388,7 +409,7 @@ const AIChatPanel = ({
                   >
                     {msg.isError ? msg.content : undefined}
                   </div>
-                  {!msg.isError && (
+                  {!msg.isError && !msg.streaming && (
                     <div className="flex justify-end mt-2">
                       <ShareMenu markdownText={msg.content} contentRef={() => contentRefs.current[idx]} />
                     </div>
@@ -398,8 +419,8 @@ const AIChatPanel = ({
             );
           })}
 
-          {/* Loading indicator */}
-          {loading && (
+          {/* Loading indicator — only shown when no streaming message yet */}
+          {loading && !messages.some(m => m.streaming) && (
             <div className="flex gap-3">
               <div className="w-8 h-8 rounded-xl bg-indigo-100 flex items-center justify-center shrink-0">
                 <BrainCircuit className="w-4 h-4 text-indigo-400" />
