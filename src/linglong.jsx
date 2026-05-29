@@ -1,4 +1,5 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useLayoutEffect } from 'react';
+import { createPortal } from 'react-dom';
 import {
   X, Plus, ChevronDown, ChevronLeft, ChevronRight, Layout,
   Download, RefreshCw, Database, Calendar, Search, Play,
@@ -49,6 +50,28 @@ const App = () => {
   const userList = ['管理员', '张三', '李四', '王五'];
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showAIChat, setShowAIChat] = useState(false);
+  const [chatLayout, setChatLayout] = useState(() => {
+    try { return localStorage.getItem('linglong_chat_layout') || 'right'; }
+    catch { return 'right'; }
+  });
+
+  // Portal — stable container moved imperatively to avoid remounts
+  const rightTargetRef = useRef(null);
+  const bottomTargetRef = useRef(null);
+  const portalContainerRef = useRef(null);
+
+  if (!portalContainerRef.current) {
+    portalContainerRef.current = document.createElement('div');
+    portalContainerRef.current.style.display = 'contents';
+  }
+
+  useLayoutEffect(() => {
+    const target = chatLayout === 'right' ? rightTargetRef.current : bottomTargetRef.current;
+    const container = portalContainerRef.current;
+    if (target && container && container.parentNode !== target) {
+      target.appendChild(container);
+    }
+  }, [chatLayout]);
 
   // --- 筛选状态 ---
   const [filterModalItem, setFilterModalItem] = useState(null);
@@ -359,7 +382,7 @@ const App = () => {
             我的报表
           </button>
           <button
-            onClick={() => setShowAIChat(true)}
+            onClick={() => setShowAIChat(prev => !prev)}
             className={`shrink-0 px-4 py-1.5 rounded-xl font-black text-xs flex items-center gap-2 transition-all ${
               showAIChat
                 ? 'bg-indigo-600 text-white border border-indigo-600 shadow-sm'
@@ -765,7 +788,11 @@ const App = () => {
               </div>
             </div>
           </div>
+          {/* Portal target for bottom panel mode */}
+          <div ref={bottomTargetRef} />
         </main>
+        {/* Portal target for right panel mode */}
+        <div ref={rightTargetRef} className="shrink-0 flex" />
       </div>
 
       {/* 筛选弹窗 (保持不变) */}
@@ -1140,6 +1167,35 @@ const App = () => {
         </div>
       )}
 
+      {/* Portal: stable container ref — never remounts AIChatPanel */}
+      {createPortal(
+        <AIChatPanel
+          visible={showAIChat}
+          onClose={() => setShowAIChat(false)}
+          layout={chatLayout}
+          onToggleLayout={() => {
+            const next = chatLayout === 'right' ? 'bottom' : 'right';
+            setChatLayout(next);
+            try { localStorage.setItem('linglong_chat_layout', next); } catch {}
+          }}
+          scenario={scenario}
+          selectedDims={selectedDims}
+          selectedMets={selectedMets}
+          columnOrder={columnOrder}
+          filters={filters}
+          hasGenerated={hasGenerated}
+          tableRows={tableRows}
+          allItemsMap={allItemsMap}
+          onUpdateScenario={setScenario}
+          onUpdateDims={setSelectedDims}
+          onUpdateMets={setSelectedMets}
+          onUpdateColumnOrder={setColumnOrder}
+          onUpdateFilters={setFilters}
+          onSetHasGenerated={setHasGenerated}
+        />,
+        portalContainerRef.current
+      )}
+
       <style dangerouslySetInnerHTML={{ __html: `
         .custom-scrollbar::-webkit-scrollbar { width: 4px; height: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
@@ -1147,25 +1203,6 @@ const App = () => {
         .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #cbd5e1; }
       `}} />
 
-      {/* AI Chat Panel */}
-      <AIChatPanel
-        visible={showAIChat}
-        onClose={() => setShowAIChat(false)}
-        scenario={scenario}
-        selectedDims={selectedDims}
-        selectedMets={selectedMets}
-        columnOrder={columnOrder}
-        filters={filters}
-        hasGenerated={hasGenerated}
-        tableRows={tableRows}
-        allItemsMap={allItemsMap}
-        onUpdateScenario={setScenario}
-        onUpdateDims={setSelectedDims}
-        onUpdateMets={setSelectedMets}
-        onUpdateColumnOrder={setColumnOrder}
-        onUpdateFilters={setFilters}
-        onSetHasGenerated={setHasGenerated}
-      />
     </div>
   );
 };
