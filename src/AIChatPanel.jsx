@@ -9,13 +9,6 @@ const QUICK_CHIPS = [
   { label: '分析当前报表数据', message: '请分析当前报表数据，看看有什么值得关注的发现' },
   { label: '什么是PSD指标', message: '什么是PSD指标？在零售分析中有何用途？' },
 ];
-
-const WELCOME_MESSAGE = {
-  role: 'agent',
-  content: '您好！我是玲珑报表 AI 助手。您可以：\n\n1. **用自然语言描述查询需求**，我将自动配置报表参数\n2. **执行查询后**，让我帮您分析数据、发现趋势\n3. **自由咨询**零售 BI 相关问题\n\n请随时向我提问！',
-  type: 'text',
-};
-
 const AIChatPanel = ({
   visible,
   onClose,
@@ -72,7 +65,7 @@ const AIChatPanel = ({
 
   const saveCurrentSession = useCallback(() => {
     const realMessages = messages.filter(m => m.role === 'user' || (m.role === 'agent' && m.content));
-    if (realMessages.length <= 1) return; // don't save welcome-only
+    if (realMessages.length <= 1) return; // don't save empty conversations
     const firstUser = realMessages.find(m => m.role === 'user');
     const title = firstUser ? (firstUser.content || '').slice(0, 40) + ((firstUser.content || '').length > 40 ? '...' : '') : '新对话';
     const session = {
@@ -104,7 +97,7 @@ const AIChatPanel = ({
 
   const startNewChat = useCallback(() => {
     if (messages.length > 1) saveCurrentSession();
-    setMessages([WELCOME_MESSAGE]);
+    setMessages([]);
     currentSessionIdRef.current = null;
     setShowHistory(false);
   }, [messages, saveCurrentSession]);
@@ -141,7 +134,7 @@ const AIChatPanel = ({
 
   useEffect(() => {
     if (visible && !initializedRef.current) {
-      setMessages([WELCOME_MESSAGE]);
+      setMessages([]);
       initializedRef.current = true;
     }
     if (visible) {
@@ -419,7 +412,7 @@ const AIChatPanel = ({
             </div>
             <div>
               <h2 className="text-sm font-black text-slate-800">AI 助手</h2>
-              <p className="text-[10px] text-slate-400 font-medium">玲珑报表智能分析</p>
+              <p className="text-[10px] text-slate-400 font-medium">玲珑有数智能体</p>
             </div>
           </div>
           <div className="flex items-center gap-1">
@@ -593,62 +586,48 @@ const AIChatPanel = ({
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Quick chips (only when no messages beyond welcome) */}
-        {messages.length <= 1 && messages[0]?.type === 'text' && !loading && (
-          <div className="shrink-0 px-4 py-3 bg-white border-t border-slate-100 flex flex-wrap gap-2">
-            {QUICK_CHIPS.map((chip) => (
-              <button
-                key={chip.label}
-                onClick={() => handleChipClick(chip.message)}
-                className="text-xs px-3 py-1.5 rounded-full bg-indigo-50 text-indigo-600 font-medium hover:bg-indigo-100 hover:text-indigo-700 transition-colors flex items-center gap-1"
-              >
-                {chip.label}
-                <ChevronRight className="w-3 h-3" />
-              </button>
-            ))}
-          </div>
-        )}
-
+        
         {/* Input area */}
         <div className="shrink-0 p-4 bg-white border-t border-slate-200">
-          <div className="flex gap-2">
-            <textarea
-              ref={inputRef}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder={isListening ? '正在聆听...' : '输入您的问题...'}
-              rows={1}
-              className="flex-1 resize-none rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 bg-slate-50"
-              disabled={loading}
-            />
-            {/* Mic button — shown when supported */}
-            {micSupported && (
+          <textarea
+            ref={inputRef}
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            placeholder={isListening ? '正在聆听...' : '我能帮您分析数据、创建图表...'}
+            rows={3}
+            className="w-full resize-none rounded-xl border border-slate-200 px-4 py-2.5 text-sm text-slate-700 placeholder-slate-400 focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 bg-slate-50 min-h-[72px]"
+            disabled={loading}
+          />
+          <div className="flex items-center justify-between mt-2">
+            <p className="text-[10px] text-slate-400">
+              Enter 发送 · Shift+Enter 换行
+              {micSupported && ' · 🎤 语音输入'}
+            </p>
+            <div className="flex items-center gap-2">
+              {micSupported && (
+                <button
+                  onClick={isListening ? stopListening : startListening}
+                  disabled={loading}
+                  className={`shrink-0 w-9 h-9 rounded-lg flex items-center justify-center transition-all ${
+                    isListening
+                      ? 'bg-red-500 text-white animate-pulse shadow-lg shadow-red-200'
+                      : 'bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700'
+                  }`}
+                  title={isListening ? '停止录音' : '语音输入'}
+                >
+                  {isListening ? <CircleStop className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                </button>
+              )}
               <button
-                onClick={isListening ? stopListening : startListening}
-                disabled={loading}
-                className={`shrink-0 w-10 h-10 rounded-xl flex items-center justify-center transition-all ${
-                  isListening
-                    ? 'bg-red-500 text-white animate-pulse shadow-lg shadow-red-200'
-                    : 'bg-slate-100 text-slate-500 hover:bg-slate-200 hover:text-slate-700'
-                }`}
-                title={isListening ? '停止录音' : '语音输入'}
+                onClick={() => sendMessage(input)}
+                disabled={loading || !input.trim()}
+                className="shrink-0 w-9 h-9 rounded-lg bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
               >
-                {isListening ? <CircleStop className="w-4 h-4" /> : <Mic className="w-4 h-4" />}
+                <Send className="w-4 h-4" />
               </button>
-            )}
-            <button
-              onClick={() => sendMessage(input)}
-              disabled={loading || !input.trim()}
-              className="shrink-0 w-10 h-10 rounded-xl bg-indigo-600 text-white flex items-center justify-center hover:bg-indigo-700 disabled:opacity-30 disabled:cursor-not-allowed transition-all"
-            >
-              <Send className="w-4 h-4" />
-            </button>
+            </div>
           </div>
-          <p className="text-[10px] text-slate-400 mt-2 text-center">
-            Enter 发送 · Shift+Enter 换行
-            {micSupported && ' · 🎤 语音输入'}
-          </p>
         </div>
         </>)}
       </div>

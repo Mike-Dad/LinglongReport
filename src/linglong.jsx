@@ -1,32 +1,102 @@
-import React, { useState, useMemo, useRef, useLayoutEffect } from 'react';
+import React, { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import {
   X, Plus, ChevronDown, ChevronLeft, ChevronRight, Layout,
   Download, RefreshCw, Database, Calendar, Search, Play,
   Filter, CheckSquare, Square, Tag, Trash2, PanelLeftClose, PanelLeftOpen,
-  ArrowUpDown, ArrowUp, ArrowDown, GripVertical, Gem, BrainCircuit
+  ArrowUpDown, ArrowUp, ArrowDown, GripVertical, Gem, BrainCircuit,
+  Table2, BarChart3, Settings2, Star
 } from 'lucide-react';
 import { DIMENSIONS, METRICS, SCENARIOS, DIM_DICT } from './data.js';
 import AIChatPanel from './AIChatPanel.jsx';
+import ChartView from './ChartView.jsx';
+import ChartSettings from './ChartSettings.jsx';
+import SheetTabs from './SheetTabs.jsx';
+
+const SHEETS_KEY = 'linglong_sheets';
+
+const createDefaultSheet = (index) => {
+  const today = new Date();
+  return {
+    id: `sheet-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    name: `报表${index || 1}`,
+    scenario: 'query',
+    selectedDims: [],
+    selectedMets: [],
+    columnOrder: [],
+    filters: {},
+    dateStart: `${today.getFullYear()}-01-01`,
+    dateEnd: `${today.getFullYear()}-01-31`,
+    compareDateStart: '',
+    compareDateEnd: '',
+    sortConfig: {},
+    showTotals: false,
+    viewMode: 'table',
+    chartType: 'bar',
+    chartXAxis: null,
+    chartYMets: [],
+    hasGenerated: false,
+  };
+};
 
 const App = () => {
-  const [scenario, setScenario] = useState('query');
-  const [selectedDims, setSelectedDims] = useState([]);
-  const [selectedMets, setSelectedMets] = useState([]);
+  // ──── Multi-sheet state ────
+  const [sheets, setSheets] = useState(() => {
+    try {
+      const raw = localStorage.getItem(SHEETS_KEY);
+      return raw ? JSON.parse(raw) : [createDefaultSheet(1)];
+    } catch { return [createDefaultSheet(1)]; }
+  });
+  const [activeSheetIndex, setActiveSheetIndex] = useState(0);
+
+  const updateActiveSheet = useCallback((updater) => {
+    setSheets(prev => prev.map((s, i) => i === activeSheetIndex ? updater(s) : s));
+  }, [activeSheetIndex]);
+
+  // Derive current sheet values
+  const activeSheet = sheets[activeSheetIndex];
+  const {
+    scenario, selectedDims, selectedMets, columnOrder, filters,
+    dateStart, dateEnd, compareDateStart, compareDateEnd,
+    sortConfig, showTotals, viewMode, chartType, chartXAxis, chartYMets, hasGenerated,
+  } = activeSheet;
+
+  // Persist sheets to localStorage
+  useEffect(() => {
+    try { localStorage.setItem(SHEETS_KEY, JSON.stringify(sheets)); } catch {}
+  }, [sheets]);
+
+  // Sheet CRUD
+  const handleAddSheet = () => {
+    setSheets(prev => [...prev, createDefaultSheet(prev.length + 1)]);
+    setActiveSheetIndex(sheets.length);
+  };
+
+  const handleDeleteSheet = (index) => {
+    setSheets(prev => {
+      if (prev.length <= 1) return prev;
+      return prev.filter((_, i) => i !== index);
+    });
+    if (index <= activeSheetIndex) {
+      setActiveSheetIndex(prev => Math.max(0, prev - 1));
+    }
+  };
+
+  const handleRenameSheet = (sheetId, newName) => {
+    setSheets(prev => prev.map(s => s.id === sheetId ? { ...s, name: newName } : s));
+  };
+
+  // ──── Shared UI state ────
   const [collapsedCats, setCollapsedCats] = useState([]);
   const [collapsedDimensions, setCollapsedDimensions] = useState(false);
   const [collapsedMetrics, setCollapsedMetrics] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
-  const [hasGenerated, setHasGenerated] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [columnOrder, setColumnOrder] = useState([]);
   const [draggingCol, setDraggingCol] = useState(null);
   const [showSaveReportModal, setShowSaveReportModal] = useState(false);
   const [showMyReportsModal, setShowMyReportsModal] = useState(false);
   const [showShareModal, setShowShareModal] = useState(false);
-  const [showTotals, setShowTotals] = useState(false);
   const [showSortModal, setShowSortModal] = useState(false);
-  const [sortConfig, setSortConfig] = useState({});
   const [sortDragId, setSortDragId] = useState(null);
   const [saveReportName, setSaveReportName] = useState('');
   const [saveReportRemark, setSaveReportRemark] = useState('');
@@ -50,6 +120,11 @@ const App = () => {
   const userList = ['管理员', '张三', '李四', '王五'];
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [showAIChat, setShowAIChat] = useState(false);
+  const [dimSearch, setDimSearch] = useState('');
+  const [showStarred, setShowStarred] = useState(false);
+  const [showChartSettings, setShowChartSettings] = useState(false);
+  const prevDimsRef = useRef([]);
+  const prevMetsRef = useRef([]);
   const [chatLayout, setChatLayout] = useState(() => {
     try { return localStorage.getItem('linglong_chat_layout') || 'right'; }
     catch { return 'right'; }
@@ -75,7 +150,6 @@ const App = () => {
 
   // --- 筛选状态 ---
   const [filterModalItem, setFilterModalItem] = useState(null);
-  const [filters, setFilters] = useState({}); // { id: { rule, values, text } }
   
   const [tempRule, setTempRule] = useState('in');
   const [tempText, setTempText] = useState('');
@@ -87,6 +161,35 @@ const App = () => {
     [...DIMENSIONS, ...METRICS].forEach(item => map[item.id] = item);
     return map;
   }, []);
+
+  // Auto-initialize chart axes when selectedDims/selectedMets change
+  useEffect(() => {
+    const currentDimIds = selectedDims.map(d => d.id);
+    const currentMetIds = selectedMets.map(m => m.id);
+
+    updateActiveSheet(s => {
+      let chartXAxis = s.chartXAxis;
+      if (currentDimIds.length === 0) {
+        chartXAxis = null;
+      } else if (!chartXAxis || !currentDimIds.includes(chartXAxis)) {
+        chartXAxis = currentDimIds[0];
+      }
+
+      let chartYMets = s.chartYMets;
+      if (currentMetIds.length === 0) {
+        chartYMets = [];
+      } else {
+        const valid = chartYMets.filter(id => currentMetIds.includes(id));
+        if (valid.length === 0) chartYMets = currentMetIds;
+        else chartYMets = valid;
+      }
+
+      return { ...s, chartXAxis, chartYMets };
+    });
+
+    prevDimsRef.current = currentDimIds;
+    prevMetsRef.current = currentMetIds;
+  }, [selectedDims, selectedMets]);
 
   const myReports = useMemo(() => savedReports.filter(report => report.owner === currentUser), [savedReports, currentUser]);
   const myOwnReports = useMemo(() => myReports.filter(report => report.creator === currentUser), [myReports, currentUser]);
@@ -108,14 +211,15 @@ const App = () => {
     e.preventDefault();
     const fromId = e.dataTransfer.getData('text/plain');
     if (!fromId || fromId === id) return;
-    setColumnOrder(prev => {
+    updateActiveSheet(s => {
+      const prev = s.columnOrder;
       const next = [...prev];
       const fromIndex = next.indexOf(fromId);
       const toIndex = next.indexOf(id);
-      if (fromIndex === -1 || toIndex === -1) return prev;
+      if (fromIndex === -1 || toIndex === -1) return s;
       next.splice(fromIndex, 1);
       next.splice(toIndex, 0, fromId);
-      return next;
+      return { ...s, columnOrder: next };
     });
     setDraggingCol(null);
   };
@@ -123,7 +227,7 @@ const App = () => {
   const handleDragEnd = () => setDraggingCol(null);
 
   const openSaveReportModal = () => {
-    setSaveReportName('');
+    setSaveReportName(activeSheet.name);
     setSaveReportRemark('');
     setSelectedSavedReportId(myOwnReports.length > 0 ? myOwnReports[0].id : null);
     setShowSaveReportModal(true);
@@ -159,6 +263,9 @@ const App = () => {
     setShowSaveReportModal(false);
     setSaveReportName('');
     setSaveReportRemark('');
+    if (name && name !== activeSheet.name) {
+      updateActiveSheet(s => ({ ...s, name }));
+    }
   };
 
   const openMyReportsModal = () => {
@@ -200,11 +307,10 @@ const App = () => {
   const loadSavedReport = () => {
     const report = savedReports.find(item => item.id === selectedSavedReportId);
     if (!report) return;
-    setColumnOrder(report.columnOrder);
-    setSelectedDims(report.columnOrder.filter(id => id.startsWith('d')).map(id => allItemsMap[id]).filter(Boolean));
-    setSelectedMets(report.columnOrder.filter(id => id.startsWith('m')).map(id => allItemsMap[id]).filter(Boolean));
+    const newDims = report.columnOrder.filter(id => id.startsWith('d')).map(id => allItemsMap[id]).filter(Boolean);
+    const newMets = report.columnOrder.filter(id => id.startsWith('m')).map(id => allItemsMap[id]).filter(Boolean);
+    updateActiveSheet(s => ({ ...s, name: report.name, columnOrder: report.columnOrder, selectedDims: newDims, selectedMets: newMets, hasGenerated: true }));
     setShowMyReportsModal(false);
-    setHasGenerated(true);
   };
 
   // --- 逻辑控制 ---
@@ -223,41 +329,47 @@ const App = () => {
       clearFilter();
       return;
     }
-    setFilters({
-      ...filters,
-      [filterModalItem.id]: { rule: tempRule, values: tempValues, text: tempText }
-    });
+    const id = filterModalItem.id;
+    const newFilter = { rule: tempRule, values: tempValues, text: tempText };
+    updateActiveSheet(s => ({ ...s, filters: { ...s.filters, [id]: newFilter }, hasGenerated: false }));
     setFilterModalItem(null);
-    setHasGenerated(false);
   };
 
   const clearFilter = () => {
-    const newFilters = { ...filters };
-    delete newFilters[filterModalItem.id];
-    setFilters(newFilters);
+    const id = filterModalItem.id;
+    updateActiveSheet(s => {
+      const newFilters = { ...s.filters };
+      delete newFilters[id];
+      return { ...s, filters: newFilters, hasGenerated: false };
+    });
     setFilterModalItem(null);
-    setHasGenerated(false);
   };
 
   const toggleItem = (item, isDim) => {
-    const list = isDim ? selectedDims : selectedMets;
-    const setter = isDim ? setSelectedDims : setSelectedMets;
-    const isDateGroup = isDim && item.category === '日期信息';
+    updateActiveSheet(s => {
+      const list = isDim ? s.selectedDims : s.selectedMets;
+      const isDateGroup = isDim && item.category === '日期信息';
+      const key = isDim ? 'selectedDims' : 'selectedMets';
 
-    if (list.find(i => i.id === item.id)) {
-      setter(list.filter(i => i.id !== item.id));
-      setColumnOrder(prev => prev.filter(id => id !== item.id));
-    } else {
+      if (list.find(i => i.id === item.id)) {
+        return {
+          ...s,
+          [key]: list.filter(i => i.id !== item.id),
+          columnOrder: s.columnOrder.filter(id => id !== item.id),
+          hasGenerated: false,
+        };
+      }
+
       let nextList = [...list, item];
       let nextColumnOrder;
       if (isDateGroup) {
-        nextColumnOrder = [item.id, ...columnOrder];
+        nextColumnOrder = [item.id, ...s.columnOrder];
       } else if (isDim) {
-        const lastDimIdx = [...columnOrder].reduce((last, id, idx) => id.startsWith('d') ? idx : last, -1);
-        nextColumnOrder = [...columnOrder];
+        const lastDimIdx = [...s.columnOrder].reduce((last, id, idx) => id.startsWith('d') ? idx : last, -1);
+        nextColumnOrder = [...s.columnOrder];
         nextColumnOrder.splice(lastDimIdx + 1, 0, item.id);
       } else {
-        nextColumnOrder = [...columnOrder, item.id];
+        nextColumnOrder = [...s.columnOrder, item.id];
       }
 
       if (isDateGroup) {
@@ -265,19 +377,17 @@ const App = () => {
         nextColumnOrder = nextColumnOrder.filter(id => id === item.id || !['d1', 'd2', 'd3'].includes(id));
       }
 
-      setter(nextList);
-      setColumnOrder(nextColumnOrder);
-    }
-
-    setHasGenerated(false);
+      return { ...s, [key]: nextList, columnOrder: nextColumnOrder, hasGenerated: false };
+    });
   };
 
   const handleGenerate = () => {
     if (selectedDims.length === 0 && selectedMets.length === 0) return;
     setIsGenerating(true);
+    const targetSheet = activeSheetIndex;
     setTimeout(() => {
       setIsGenerating(false);
-      setHasGenerated(true);
+      setSheets(prev => prev.map((s, i) => i === targetSheet ? { ...s, hasGenerated: true } : s));
     }, 800);
   };
 
@@ -302,7 +412,9 @@ const App = () => {
   const ROW_COUNT = 20;
   const tableRows = useMemo(() => {
     if (!hasGenerated) return [];
-    return [...Array(ROW_COUNT)].map((_, i) => {
+    // Find the active date dimension (d1=按日, d2=按周, d3=按月)
+    const dateDim = selectedDims.find(d => d.id === 'd1' || d.id === 'd2' || d.id === 'd3');
+    const rows = [...Array(ROW_COUNT)].map((_, i) => {
       const row = {};
       selectedDims.forEach(d => {
         const values = DIM_DICT[d.name] || [];
@@ -344,7 +456,31 @@ const App = () => {
       });
       return row;
     });
-  }, [hasGenerated, selectedDims, selectedMets]);
+
+    // Filter by date range if a date dimension is selected
+    if (dateDim && dateStart && dateEnd) {
+      return rows.filter(row => {
+        const val = row[dateDim.id];
+        if (!val) return true;
+        if (dateDim.id === 'd1') {
+          // 按日: YYYYMMDD -> compare with YYYY-MM-DD
+          const d = val.slice(0, 4) + '-' + val.slice(4, 6) + '-' + val.slice(6, 8);
+          return d >= dateStart && d <= dateEnd;
+        }
+        if (dateDim.id === 'd3') {
+          // 按月: YYYYMM -> compare YYYY-MM
+          const m = val.slice(0, 4) + '-' + val.slice(4, 6);
+          const ms = dateStart.slice(0, 7);
+          const me = dateEnd.slice(0, 7);
+          return m >= ms && m <= me;
+        }
+        // d2 (按周): skip filtering, week format doesn't map cleanly
+        return true;
+      });
+    }
+
+    return rows;
+  }, [hasGenerated, selectedDims, selectedMets, dateStart, dateEnd]);
 
   const metricTotals = useMemo(() => {
     const totals = {};
@@ -372,8 +508,16 @@ const App = () => {
 
       {/* 顶部导航栏 */}
       <header className="shrink-0 bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between shadow-sm z-30">
-        <h1 className="text-lg font-black text-slate-800 tracking-tight flex items-center gap-2"><Gem className="w-5 h-5 text-indigo-500" />玲珑报表</h1>
+        <h1 className="text-lg font-black text-slate-800 tracking-tight flex items-center gap-2"><Gem className="w-5 h-5 text-indigo-500" />玲珑有数</h1>
         <div className="flex items-center gap-3">
+          <button
+            disabled={!hasGenerated}
+            onClick={openSaveReportModal}
+            className="shrink-0 px-4 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-xl font-black text-xs flex items-center gap-2 hover:bg-slate-50 hover:border-slate-300 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
+          >
+            <Download className="w-3.5 h-3.5" />
+            保存
+          </button>
           <button
             onClick={openMyReportsModal}
             className="shrink-0 px-4 py-1.5 bg-white border border-slate-200 text-slate-600 rounded-xl font-black text-xs flex items-center gap-2 hover:bg-slate-50 hover:border-slate-300 transition-all"
@@ -430,7 +574,7 @@ const App = () => {
                 <span className="text-[10px] font-black text-slate-400 uppercase tracking-widest">报表类型</span>
                 <select
                   value={scenario}
-                  onChange={(e) => setScenario(e.target.value)}
+                  onChange={(e) => updateActiveSheet(s => ({...s, scenario: e.target.value}))}
                   className="px-3 py-1.5 bg-slate-50 border border-slate-200 rounded-xl text-xs font-bold focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
                 >
                   {SCENARIOS.map(s => (
@@ -447,11 +591,35 @@ const App = () => {
               {sidebarCollapsed ? <PanelLeftOpen className="w-4 h-4" /> : <PanelLeftClose className="w-4 h-4" />}
             </button>
           </div>
-          <div className={`${sidebarCollapsed ? 'hidden' : 'flex-1 overflow-y-auto p-2 space-y-4 custom-scrollbar'}`}>
-            <div className="p-4 bg-slate-50/50 border-b border-slate-100 flex items-center justify-between">
-              <span className="text-[10px] font-black text-slate-400 uppercase tracking-[0.2em]">维度指标库</span>
-              <RefreshCw className="w-3.5 h-3.5 text-slate-300 hover:rotate-180 transition-transform duration-500 cursor-pointer" />
+          {/* 搜索框 — 固定不动 */}
+          <div className={`px-3 py-2.5 border-b border-slate-100 ${sidebarCollapsed ? 'hidden' : ''}`}>
+            <div className="relative">
+              <Search className="w-3.5 h-3.5 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={dimSearch}
+                onChange={(e) => setDimSearch(e.target.value)}
+                placeholder="搜索维度或指标..."
+                className="w-full pl-9 pr-16 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs font-medium text-slate-700 placeholder-slate-400 focus:outline-none focus:border-indigo-300 focus:ring-2 focus:ring-indigo-100 transition-all"
+              />
+              <button
+                onClick={() => setShowStarred(!showStarred)}
+                className={`absolute right-8 top-1/2 -translate-y-1/2 w-5 h-5 flex items-center justify-center rounded transition-colors ${showStarred ? 'text-amber-500' : 'text-slate-300 hover:text-slate-400'}`}
+                title="只显示已选条目"
+              >
+                <Star className="w-3.5 h-3.5" fill={showStarred ? 'currentColor' : 'none'} />
+              </button>
+              {dimSearch && (
+                <button
+                  onClick={() => setDimSearch('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 w-4 h-4 rounded-full bg-slate-300 text-white flex items-center justify-center hover:bg-slate-400 transition-colors"
+                >
+                  <X className="w-2.5 h-2.5" />
+                </button>
+              )}
             </div>
+          </div>
+          <div className={`${sidebarCollapsed ? 'hidden' : 'flex-1 overflow-y-auto p-2 space-y-4 custom-scrollbar'}`}>
             {/* 维度组 */}
             <div>
               <button onClick={() => setCollapsedDimensions(!collapsedDimensions)} className="w-full flex items-center justify-between px-3 py-2 text-indigo-600 hover:bg-slate-50 rounded-lg group">
@@ -468,7 +636,7 @@ const App = () => {
                       </button>
                       {!collapsedCats.includes(cat) && (
                         <div className="mt-1 space-y-1">
-                          {items.map(dim => {
+                          {items.filter(dim => (!dimSearch || dim.name.includes(dimSearch)) && (!showStarred || selectedDims.some(s => s.id === dim.id))).map(dim => {
                             const active = selectedDims.some(i => i.id === dim.id);
                             const hasFilter = !!filters[dim.id];
                             return (
@@ -512,7 +680,7 @@ const App = () => {
                       </button>
                       {!collapsedCats.includes(cat) && (
                         <div className="mt-1 space-y-1">
-                          {items.map(met => {
+                          {items.filter(met => (!dimSearch || met.name.includes(dimSearch)) && (!showStarred || selectedMets.some(s => s.id === met.id))).map(met => {
                             const active = selectedMets.some(i => i.id === met.id);
                             const hasFilter = !!filters[met.id];
                             return (
@@ -544,111 +712,168 @@ const App = () => {
 
         {/* 右侧主区：合二为一的交互式报表 */}
         <main className="flex-1 flex flex-col overflow-hidden bg-slate-50/50">
-          
-          {/* 筛选条件浮条 (Query Tags) - 与左侧"报表类型"卡片同高同样式 */}
-          <div className="mx-4 mt-4 mb-2 rounded-[1.5rem] bg-white border border-slate-200 px-4 py-3 shadow-sm flex items-center gap-3 min-h-[56px]">
-             <div className="flex items-center gap-2 text-slate-400 border-r pr-3 border-slate-100 whitespace-nowrap">
-               <Tag className="w-3.5 h-3.5" />
-               <span className="text-[10px] font-black uppercase">全局筛选:</span>
-             </div>
-             <div className="flex items-center gap-3 bg-slate-100 px-3 py-1.5 rounded-2xl border border-slate-200 text-[11px] text-slate-500">
-               <Calendar className="w-3 h-3 text-slate-400" />
-               {scenario === 'compare' ? (
-                 <div className="flex items-center gap-2">
-                     <div className="px-2 py-1 bg-white rounded-xl border text-[10px] shadow-sm">本期: 2023-10-01 ~ 2023-10-31</div>
-                     <div className="text-slate-300">vs</div>
-                     <div className="px-2 py-1 bg-white rounded-xl border text-[10px] shadow-sm">上期: 2023-09-01 ~ 2023-09-30</div>
-                 </div>
-               ) : (
-                 <span className="font-black tracking-wide">2023-10-01 ~ 2023-10-31</span>
-               )}
-               <div className="h-3 w-px bg-slate-300 mx-1"></div>
-               <Search className="w-3 h-3 text-indigo-500 cursor-pointer" />
-             </div>
-             <div className="flex-1 flex flex-wrap gap-2 ml-4">
-               {Object.keys(filters).length === 0 ? (
-                 <span className="text-xs text-slate-300 italic">未设置过滤条件</span>
-               ) : (
-                 Object.entries(filters).map(([id, filter]) => {
-                   const item = allItemsMap[id];
-                   if (!item) return null;
-                   const isDim = DIMENSIONS.find(d => d.id === id);
-                   return (
-                     <div key={id} className={`flex items-center gap-1.5 pl-2 pr-1 py-0.5 rounded-lg border text-[11px] font-bold transition-all ${isDim ? 'bg-indigo-50 border-indigo-100 text-indigo-700' : 'bg-orange-50 border-orange-100 text-orange-700'}`}>
-                       <span>{item.name}:</span>
-                       <span className="opacity-60 font-medium truncate max-w-[100px]">
-                         {filter.values.length > 0 ? `${filter.values[0]}${filter.values.length > 1 ? '...' : ''}` : filter.text}
-                       </span>
-                       <div className="flex items-center gap-0.5 ml-1">
-                          <button onClick={(e) => openFilterModal(e, item)} className="p-0.5 hover:bg-black/5 rounded-md"><Filter className="w-2.5 h-2.5"/></button>
-                          <button onClick={() => { const newF = {...filters}; delete newF[id]; setFilters(newF); setHasGenerated(false); }} className="p-0.5 hover:bg-black/5 rounded-md"><X className="w-2.5 h-2.5"/></button>
-                       </div>
-                     </div>
-                   );
-                 })
-               )}
-             </div>
-             {Object.keys(filters).length > 0 && (
-               <button onClick={() => {setFilters({}); setHasGenerated(false);}} className="text-[10px] font-bold text-slate-400 hover:text-red-500 flex items-center gap-1 ml-2">
-                 <Trash2 className="w-3 h-3" /> 重置
-               </button>
-             )}
-          </div>
-
-          <div className="flex-1 flex flex-col p-4 sm:p-6 overflow-hidden gap-4">
+          <div className="flex-1 flex flex-col overflow-hidden">
             {/* 核心整合面板 */}
-            <div className="flex-1 flex flex-col bg-white rounded-[2rem] border border-slate-200 shadow-xl shadow-slate-200/50 overflow-hidden">
-              
-              {/* 报表拼装工作台 (Integrated Workbench Header) */}
-              <div className="bg-slate-50/50 px-5 py-3 border-b border-slate-100">
-                <div className="flex items-center gap-2">
+            <div className="flex-1 flex flex-col bg-white overflow-hidden">
+
+              {/* 工具栏行 — 左侧视图切换 tabs，右侧操作按钮 */}
+              <div className="bg-slate-50/50 px-5 py-2.5 border-b border-slate-100 flex items-center gap-3">
+                {/* 视图切换 tabs */}
+                <div className="flex items-center bg-slate-200/60 rounded-xl p-0.5">
                   <button
-                    onClick={() => setShowSortModal(true)}
-                    className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold cursor-pointer select-none transition-all ${Object.keys(sortConfig).length > 0 ? 'bg-amber-50 border-amber-300 text-amber-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}
+                    onClick={() => updateActiveSheet(s => ({...s, viewMode: 'table'}))}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-bold transition-all ${
+                      viewMode === 'table'
+                        ? 'bg-white text-indigo-600 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700'
+                    }`}
                   >
-                    <ArrowUpDown className="w-3.5 h-3.5" />
-                    排序
-                  </button>
-                  <label className={`flex items-center gap-2 px-3 py-1.5 rounded-xl border text-xs font-bold cursor-pointer select-none transition-all ${showTotals ? 'bg-indigo-50 border-indigo-300 text-indigo-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'}`}>
-                    <input
-                      type="checkbox"
-                      checked={showTotals}
-                      onChange={(e) => setShowTotals(e.target.checked)}
-                      className="sr-only"
-                    />
-                    {showTotals ? <CheckSquare className="w-3.5 h-3.5 text-indigo-600" /> : <Square className="w-3.5 h-3.5 text-slate-400" />}
-                    显示合计
-                  </label>
-                  {(selectedDims.length === 0 && selectedMets.length === 0) && (
-                    <div className="flex-1 text-xs text-slate-300 italic">请从左侧拖入维度或指标...</div>
-                  )}
-                  <div className="flex-1" />
-                  <button
-                    disabled={selectedDims.length === 0 && selectedMets.length === 0 || isGenerating}
-                    onClick={handleGenerate}
-                    className="shrink-0 px-6 py-2.5 bg-indigo-600 text-white rounded-xl font-black text-xs flex items-center gap-2 hover:bg-indigo-700 disabled:bg-slate-100 disabled:text-slate-300 shadow-lg shadow-indigo-200 transition-all active:scale-95"
-                  >
-                    {isGenerating ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4 fill-current" />}
-                    {hasGenerated ? '重新生成' : '执行查询'}
+                    <Table2 className="w-3.5 h-3.5" />
+                    表格
                   </button>
                   <button
-                    disabled={!hasGenerated}
-                    onClick={() => {}}
-                    className="shrink-0 px-6 py-2.5 bg-slate-500 text-white rounded-xl font-black text-xs flex items-center gap-2 hover:bg-slate-600 disabled:bg-slate-100 disabled:text-slate-300 shadow-lg shadow-slate-200 transition-all active:scale-95"
+                    onClick={() => updateActiveSheet(s => ({...s, viewMode: 'chart'}))}
+                    className={`flex items-center gap-1.5 px-3 py-1.5 rounded-[10px] text-xs font-bold transition-all ${
+                      viewMode === 'chart'
+                        ? 'bg-white text-indigo-600 shadow-sm'
+                        : 'text-slate-500 hover:text-slate-700'
+                    }`}
                   >
-                    <Download className="w-4 h-4" />
-                    导出数据
-                  </button>
-                  <button
-                    disabled={!hasGenerated}
-                    onClick={openSaveReportModal}
-                    className="shrink-0 px-6 py-2.5 bg-slate-500 text-white rounded-xl font-black text-xs flex items-center gap-2 hover:bg-slate-600 disabled:bg-slate-100 disabled:text-slate-300 shadow-lg shadow-slate-200 transition-all active:scale-95"
-                  >
-                    <Download className="w-4 h-4" />
-                    保存报表
+                    <BarChart3 className="w-3.5 h-3.5" />
+                    图形
                   </button>
                 </div>
+
+                {/* 图示设置按钮 — 仅在图形模式下显示 */}
+                {viewMode === 'chart' && (
+                  <button
+                    onClick={() => setShowChartSettings(prev => !prev)}
+                    className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-[10px] text-xs font-bold transition-all ${
+                      showChartSettings
+                        ? 'bg-white text-indigo-600 shadow-sm border border-indigo-200'
+                        : 'text-slate-500 hover:text-slate-700 hover:bg-white/60'
+                    }`}
+                    title="图示设置"
+                  >
+                    <Settings2 className="w-3.5 h-3.5" />
+                    设置
+                  </button>
+                )}
+
+                {(selectedDims.length === 0 && selectedMets.length === 0) && (
+                  <div className="flex-1 text-xs text-slate-300 italic">请从左侧拖入维度或指标...</div>
+                )}
+                <div className="flex-1" />
+
+                <button
+                  disabled={selectedDims.length === 0 && selectedMets.length === 0 || isGenerating}
+                  onClick={handleGenerate}
+                  className="shrink-0 px-3.5 py-1.5 bg-indigo-600 text-white rounded-lg font-bold text-[11px] flex items-center gap-1.5 hover:bg-indigo-700 disabled:bg-slate-100 disabled:text-slate-300 shadow-sm shadow-indigo-200 transition-all active:scale-95"
+                >
+                  {isGenerating ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3 fill-current" />}
+                  {hasGenerated ? '重新生成' : '执行查询'}
+                </button>
+                <button
+                  disabled={!hasGenerated}
+                  onClick={() => {}}
+                  className="shrink-0 px-3.5 py-1.5 bg-slate-600 text-white rounded-lg font-bold text-[11px] flex items-center gap-1.5 hover:bg-slate-700 disabled:bg-slate-100 disabled:text-slate-300 shadow-sm transition-all active:scale-95"
+                >
+                  <Download className="w-3 h-3" />
+                  导出
+                </button>
               </div>
+
+              {/* 筛选条件浮条 — 紧贴报表区 */}
+              <div className="mx-4 mt-3 mb-1 rounded-2xl bg-white border border-slate-200 px-4 py-2.5 shadow-sm flex items-center gap-3">
+                <div className="flex items-center gap-2 text-slate-400 border-r pr-3 border-slate-100 whitespace-nowrap">
+                  <Tag className="w-3.5 h-3.5" />
+                  <span className="text-[10px] font-black uppercase">全局筛选:</span>
+                </div>
+                <div className="flex items-center gap-2 bg-slate-100 px-2.5 py-1.5 rounded-2xl border border-slate-200">
+                  <Calendar className="w-3 h-3 text-slate-400 shrink-0" />
+                  {scenario === 'compare' ? (
+                    <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] font-medium text-slate-400">本期</span>
+                        <input type="date" value={dateStart} onChange={(e) => updateActiveSheet(s => ({...s, dateStart: e.target.value}))}
+                          className="w-[120px] px-2 py-0.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 focus:outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-100" />
+                        <span className="text-[10px] text-slate-300">~</span>
+                        <input type="date" value={dateEnd} onChange={(e) => updateActiveSheet(s => ({...s, dateEnd: e.target.value}))}
+                          className="w-[120px] px-2 py-0.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 focus:outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-100" />
+                      </div>
+                      <div className="text-[10px] font-black text-slate-300">vs</div>
+                      <div className="flex items-center gap-1">
+                        <span className="text-[10px] font-medium text-slate-400">上期</span>
+                        <input type="date" value={compareDateStart} onChange={(e) => updateActiveSheet(s => ({...s, compareDateStart: e.target.value}))}
+                          className="w-[120px] px-2 py-0.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 focus:outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-100" />
+                        <span className="text-[10px] text-slate-300">~</span>
+                        <input type="date" value={compareDateEnd} onChange={(e) => updateActiveSheet(s => ({...s, compareDateEnd: e.target.value}))}
+                          className="w-[120px] px-2 py-0.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 focus:outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-100" />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-1">
+                      <input type="date" value={dateStart} onChange={(e) => { updateActiveSheet(s => ({...s, dateStart: e.target.value, hasGenerated: false})); }}
+                        className="w-[126px] px-2 py-0.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 focus:outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-100" />
+                      <span className="text-[10px] text-slate-300 font-medium">~</span>
+                      <input type="date" value={dateEnd} onChange={(e) => { updateActiveSheet(s => ({...s, dateEnd: e.target.value, hasGenerated: false})); }}
+                        className="w-[126px] px-2 py-0.5 rounded-lg border border-slate-200 bg-white text-[10px] font-bold text-slate-600 focus:outline-none focus:border-indigo-300 focus:ring-1 focus:ring-indigo-100" />
+                    </div>
+                  )}
+                </div>
+                <div className="flex-1 flex flex-wrap gap-2 ml-4">
+                  {Object.keys(filters).length === 0 ? (
+                    <span className="text-xs text-slate-300 italic">未设置过滤条件</span>
+                  ) : (
+                    Object.entries(filters).map(([id, filter]) => {
+                      const item = allItemsMap[id];
+                      if (!item) return null;
+                      const isDim = DIMENSIONS.find(d => d.id === id);
+                      return (
+                        <div key={id} className={`flex items-center gap-1.5 pl-2 pr-1 py-0.5 rounded-lg border text-[11px] font-bold transition-all ${isDim ? 'bg-indigo-50 border-indigo-100 text-indigo-700' : 'bg-orange-50 border-orange-100 text-orange-700'}`}>
+                          <span>{item.name}:</span>
+                          <span className="opacity-60 font-medium truncate max-w-[100px]">
+                            {filter.values.length > 0 ? `${filter.values[0]}${filter.values.length > 1 ? '...' : ''}` : filter.text}
+                          </span>
+                          <div className="flex items-center gap-0.5 ml-1">
+                             <button onClick={(e) => openFilterModal(e, item)} className="p-0.5 hover:bg-black/5 rounded-md"><Filter className="w-2.5 h-2.5"/></button>
+                             <button onClick={() => { updateActiveSheet(s => { const newF = {...s.filters}; delete newF[id]; return {...s, filters: newF, hasGenerated: false}; }); }} className="p-0.5 hover:bg-black/5 rounded-md"><X className="w-2.5 h-2.5"/></button>
+                          </div>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+                {Object.keys(filters).length > 0 && (
+                  <button onClick={() => { updateActiveSheet(s => ({...s, filters: {}, hasGenerated: false})); }} className="text-[10px] font-bold text-slate-400 hover:text-red-500 flex items-center gap-1 ml-2">
+                    <Trash2 className="w-3 h-3" /> 重置
+                  </button>
+                )}
+              </div>
+
+              {/* 排序与合计控制行 — 仅表格模式显示 */}
+              {viewMode !== 'chart' && (
+              <div className="px-5 py-1.5 border-b border-slate-100 flex items-center gap-2 bg-white">
+                <button
+                  onClick={() => setShowSortModal(true)}
+                  className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-bold cursor-pointer select-none transition-all ${
+                    Object.keys(sortConfig).length > 0
+                      ? 'bg-amber-50 border-amber-300 text-amber-700'
+                      : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'
+                  }`}
+                >
+                  <ArrowUpDown className="w-3 h-3" />
+                  排序
+                </button>
+                <label className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border text-[11px] font-bold cursor-pointer select-none transition-all ${
+                  showTotals ? 'bg-indigo-50 border-indigo-300 text-indigo-700' : 'bg-white border-slate-200 text-slate-500 hover:border-slate-300'
+                }`}>
+                  <input type="checkbox" checked={showTotals} onChange={(e) => updateActiveSheet(s => ({...s, showTotals: e.target.checked}))} className="sr-only" />
+                  {showTotals ? <CheckSquare className="w-3 h-3 text-indigo-600" /> : <Square className="w-3 h-3 text-slate-400" />}
+                  合计
+                </label>
+              </div>
+              )}
 
               {/* 数据结果区 (Integrated Data Grid) */}
               <div className="flex-1 overflow-hidden flex flex-col relative">
@@ -663,10 +888,25 @@ const App = () => {
                 ) : null}
 
                 {(selectedDims.length > 0 || selectedMets.length > 0) ? (
+                  viewMode === 'chart' ? (
+                    <div className="flex-1 overflow-y-auto p-6 custom-scrollbar">
+                      <ChartView
+                        chartType={chartType}
+                        data={tableRows}
+                        xKey={chartXAxis}
+                        yKeys={chartYMets.map(id => {
+                          const met = allItemsMap[id];
+                          return { id, name: met?.name || id, unit: met?.unit };
+                        })}
+                        hasGenerated={hasGenerated}
+                      />
+                    </div>
+                  ) : (
                   <div className="flex-1 min-w-0 overflow-x-auto overflow-y-auto custom-scrollbar">
                     <table className="min-w-max text-left border-collapse table-fixed border border-slate-200">
                       <thead className="bg-white border-b border-slate-200 sticky top-0 z-[1]">
                         <tr>
+                          <th className="px-2 py-2 align-middle text-center w-[44px] border border-slate-200 bg-slate-50 text-[10px] font-medium text-slate-400 select-none">#</th>
                           {columns.map(col => {
                             const isDim = col.id.startsWith('d');
                             return (
@@ -677,7 +917,7 @@ const App = () => {
                                 onDragOver={handleDragOver(col.id)}
                                 onDrop={handleDrop(col.id)}
                                 onDragEnd={handleDragEnd}
-                                className={`px-3 py-2 align-middle whitespace-nowrap w-[150px] border border-slate-200 cursor-grab ${draggingCol === col.id ? 'opacity-70' : ''}`}
+                                className={`px-3 py-2 align-middle whitespace-nowrap w-[105px] border border-slate-200 cursor-grab ${draggingCol === col.id ? 'opacity-70' : ''}`}
                               >
                                 <div className="group relative inline-flex items-center gap-1.5 pl-3 pr-1.5 py-1 bg-white/90 border border-slate-100 rounded-lg shadow-sm text-slate-700 font-bold text-[11px] transition-all hover:border-slate-300">
                                   {col.name}
@@ -702,13 +942,14 @@ const App = () => {
                         <tbody className="divide-y divide-slate-200">
                           {tableRows.map((row, i) => (
                             <tr key={i} className="hover:bg-indigo-50/30 transition-colors group">
+                              <td className="px-2 py-2 text-center text-[10px] text-slate-400 leading-tight whitespace-nowrap w-[44px] border border-slate-200 bg-slate-50/60 select-none">{i + 1}</td>
                               {columns.map(col => (
                                 col.id.startsWith('d') ? (
-                                  <td key={col.id} className="px-3 py-2 text-[11px] font-medium text-slate-600 leading-tight whitespace-nowrap w-[150px] border border-slate-200">
+                                  <td key={col.id} className="px-3 py-2 text-[11px] font-medium text-slate-600 leading-tight whitespace-nowrap w-[105px] border border-slate-200">
                                     {row[col.id] != null ? row[col.id] : DIM_DICT[col.name] ? DIM_DICT[col.name][i % DIM_DICT[col.name].length] : `数据项-${i+1}`}
                                   </td>
                                 ) : (
-                                  <td key={col.id} className="px-3 py-2 text-[11px] font-mono text-slate-500 text-right leading-tight whitespace-nowrap w-[150px] border border-slate-200">
+                                  <td key={col.id} className="px-3 py-2 text-[11px] font-mono text-slate-500 text-right leading-tight whitespace-nowrap w-[105px] border border-slate-200">
                                     {allItemsMap[col.id]?.unit === '%'
                                       ? `${row[col.id].toFixed(1)}%`
                                       : row[col.id].toLocaleString('zh-CN', {minimumFractionDigits: 1})}
@@ -722,6 +963,7 @@ const App = () => {
                       {showTotals && columns.length > 0 && (
                         <tfoot className="bg-slate-50/80 border-t-2 border-slate-200 sticky bottom-0">
                           <tr>
+                            <td className="px-2 py-1.5 text-center w-[44px] border border-slate-200 bg-slate-100" />
                             {columns.map((col, idx) => {
                               if (col.id.startsWith('d')) {
                                 return (
@@ -774,6 +1016,7 @@ const App = () => {
                       </div>
                     )}
                   </div>
+                  )
                 ) : (
                   <div className="flex-1 flex flex-col items-center justify-center text-slate-300 p-12 text-center">
                     <div className="w-20 h-20 bg-slate-50 rounded-full flex items-center justify-center mb-6 border-2 border-dashed border-slate-200">
@@ -791,9 +1034,34 @@ const App = () => {
           {/* Portal target for bottom panel mode */}
           <div ref={bottomTargetRef} />
         </main>
+        {/* Chart settings panel */}
+        {viewMode === 'chart' && (
+          <ChartSettings
+            visible={showChartSettings}
+            selectedDims={selectedDims}
+            selectedMets={selectedMets}
+            chartType={chartType}
+            xAxisDim={chartXAxis}
+            yAxisMets={chartYMets}
+            onChartTypeChange={(t) => updateActiveSheet(s => ({...s, chartType: t}))}
+            onXAxisChange={(id) => updateActiveSheet(s => ({...s, chartXAxis: id}))}
+            onYAxisChange={(ids) => updateActiveSheet(s => ({...s, chartYMets: ids}))}
+            onClose={() => setShowChartSettings(false)}
+          />
+        )}
         {/* Portal target for right panel mode */}
         <div ref={rightTargetRef} className="shrink-0 flex" />
       </div>
+
+      {/* Excel-style sheet tabs */}
+      <SheetTabs
+        sheets={sheets}
+        activeSheetIndex={activeSheetIndex}
+        onSwitch={setActiveSheetIndex}
+        onAdd={handleAddSheet}
+        onRename={handleRenameSheet}
+        onDelete={handleDeleteSheet}
+      />
 
       {/* 筛选弹窗 (保持不变) */}
       {filterModalItem && (
@@ -1093,17 +1361,17 @@ const App = () => {
                         e.preventDefault();
                         const fromId = e.dataTransfer.getData('text/plain');
                         if (!fromId || fromId === col.id) return;
-                        setColumnOrder(prev => {
+                        updateActiveSheet(s => {
+                          const prev = s.columnOrder;
                           const next = [...prev];
                           const fromIdx = next.indexOf(fromId);
                           const toIdx = next.indexOf(col.id);
-                          if (fromIdx === -1 || toIdx === -1) return prev;
+                          if (fromIdx === -1 || toIdx === -1) return s;
                           next.splice(fromIdx, 1);
                           next.splice(toIdx, 0, fromId);
-                          return next;
+                          return { ...s, columnOrder: next, hasGenerated: false };
                         });
                         setSortDragId(null);
-                        setHasGenerated(false);
                       }}
                       onDragEnd={() => setSortDragId(null)}
                       className={`flex items-center gap-3 px-3 py-2 rounded-xl transition-all ${sortDragId === col.id ? 'opacity-50 bg-slate-100' : 'hover:bg-slate-50'}`}
@@ -1117,7 +1385,7 @@ const App = () => {
                             type="radio"
                             name={`sort-${col.id}`}
                             checked={sortConfig[col.id] === 'asc'}
-                            onChange={() => setSortConfig(prev => ({ ...prev, [col.id]: 'asc' }))}
+                            onChange={() => updateActiveSheet(s => ({...s, sortConfig: {...s.sortConfig, [col.id]: 'asc'}}))}
                             className="sr-only"
                           />
                           <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${sortConfig[col.id] === 'asc' ? 'border-amber-500' : 'border-slate-300'}`}>
@@ -1131,7 +1399,7 @@ const App = () => {
                             type="radio"
                             name={`sort-${col.id}`}
                             checked={sortConfig[col.id] === 'desc'}
-                            onChange={() => setSortConfig(prev => ({ ...prev, [col.id]: 'desc' }))}
+                            onChange={() => updateActiveSheet(s => ({...s, sortConfig: {...s.sortConfig, [col.id]: 'desc'}}))}
                             className="sr-only"
                           />
                           <div className={`w-4 h-4 rounded-full border-2 flex items-center justify-center ${sortConfig[col.id] === 'desc' ? 'border-amber-500' : 'border-slate-300'}`}>
@@ -1148,7 +1416,7 @@ const App = () => {
             </div>
             <div className="px-8 py-6 bg-slate-50 border-t border-slate-100 flex justify-between items-center">
               <button
-                onClick={() => { setSortConfig({}); setShowSortModal(false); }}
+                onClick={() => { updateActiveSheet(s => ({...s, sortConfig: {}})); setShowSortModal(false); }}
                 className="flex items-center gap-2 text-xs font-black text-slate-400 hover:text-red-500 transition-colors uppercase tracking-widest"
               >
                 <Trash2 className="w-4 h-4" /> 重置排序
@@ -1156,7 +1424,7 @@ const App = () => {
               <div className="flex gap-4">
                 <button onClick={() => setShowSortModal(false)} className="px-6 py-2.5 text-xs font-black text-slate-500 hover:bg-slate-200 rounded-xl transition-colors uppercase tracking-widest">取消</button>
                 <button
-                  onClick={() => { setShowSortModal(false); setHasGenerated(false); }}
+                  onClick={() => { setShowSortModal(false); updateActiveSheet(s => ({...s, hasGenerated: false})); }}
                   className="px-8 py-2.5 bg-amber-500 text-white rounded-xl text-xs font-black shadow-lg shadow-amber-100 hover:bg-amber-600 active:scale-95 transition-all uppercase tracking-widest"
                 >
                   确定
@@ -1186,12 +1454,12 @@ const App = () => {
           hasGenerated={hasGenerated}
           tableRows={tableRows}
           allItemsMap={allItemsMap}
-          onUpdateScenario={setScenario}
-          onUpdateDims={setSelectedDims}
-          onUpdateMets={setSelectedMets}
-          onUpdateColumnOrder={setColumnOrder}
-          onUpdateFilters={setFilters}
-          onSetHasGenerated={setHasGenerated}
+          onUpdateScenario={(v) => updateActiveSheet(s => ({...s, scenario: v}))}
+          onUpdateDims={(v) => updateActiveSheet(s => ({...s, selectedDims: v}))}
+          onUpdateMets={(v) => updateActiveSheet(s => ({...s, selectedMets: v}))}
+          onUpdateColumnOrder={(v) => updateActiveSheet(s => ({...s, columnOrder: v}))}
+          onUpdateFilters={(v) => updateActiveSheet(s => ({...s, filters: v}))}
+          onSetHasGenerated={(v) => updateActiveSheet(s => ({...s, hasGenerated: v}))}
         />,
         portalContainerRef.current
       )}
